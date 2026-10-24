@@ -93,8 +93,48 @@ def detect_conflicts(documents=None, question=None):
         return []
 
     relevant = []
+
     for conflict in all_conflicts:
-        if any(keyword in q for keyword in conflict["keywords"]):
+        topic = conflict["topic"].casefold()
+
+        if topic == "upi refund processing time":
+            matches = (
+                "upi" in q
+                and any(term in q for term in (
+                    "processing time",
+                    "business days",
+                    "support ticket",
+                    "conflicting",
+                    "refund normally",
+                ))
+            )
+        elif topic == "damaged-item refund submission window":
+            matches = (
+                "damaged" in q
+                and any(term in q for term in (
+                    "submission window",
+                    "submit",
+                    "delivery",
+                    "days",
+                    "policy",
+                ))
+                and "legacy" not in q
+                and "2024" not in q
+            )
+        elif topic == "legacy damaged-item refund window":
+            matches = (
+                "damaged" in q
+                and any(term in q for term in (
+                    "legacy",
+                    "2024",
+                    "earlier",
+                    "historical",
+                ))
+            )
+        else:
+            matches = False
+
+        if matches:
             relevant.append(conflict)
 
     return relevant

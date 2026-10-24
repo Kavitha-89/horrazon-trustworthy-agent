@@ -1,11 +1,9 @@
-
-
 import hashlib
 import json
 import random
 import time
 from pathlib import Path
-
+from src.injection_gate import authorize_seller_message
 from src.database import run_sql as database_run_sql
 from src.documents import search_docs as document_search_docs
 from src.documents import get_policy as document_get_policy
@@ -90,7 +88,7 @@ def send_seller_whatsapp(seller_id, message, user_authorized=False):
     return {"status": "logged_only", "seller_id": seller_id}
 
 
-def _dispatch(tool_name, arguments):
+def _dispatch(tool_name, arguments, user_question=None):
     if not isinstance(arguments, dict):
         raise ToolError("Tool arguments must be a dictionary")
 
@@ -114,16 +112,28 @@ def _dispatch(tool_name, arguments):
         return get_policy(name, as_of_date)
 
     if tool_name == "send_seller_whatsapp":
+        seller_id = arguments.get("seller_id")
+        message = arguments.get("message")
+
+        authorized, reason = authorize_seller_message(
+            user_question,
+            seller_id,
+            message
+        )
+
+        if not authorized:
+            raise ToolError(reason)
+
         return send_seller_whatsapp(
-            arguments.get("seller_id"),
-            arguments.get("message"),
-            arguments.get("user_authorized", False)
+            seller_id,
+            message,
+            user_authorized=True
         )
 
     raise ToolError(f"Unknown tool: {tool_name}")
 
 
-def call_tool(tool_name, arguments):
+def call_tool(tool_name, arguments, user_question=None):
     global _call_count
 
     if _call_count >= MAX_TOOL_CALLS:
@@ -150,7 +160,7 @@ def call_tool(tool_name, arguments):
         if fault < 2 * FAULT_RATE / 3:
             raise ToolError("Simulated tool failure")
 
-        result = _dispatch(tool_name, arguments)
+        result = _dispatch(tool_name, arguments, user_question=user_question)
 
         if fault < FAULT_RATE:
             result = [] if tool_name == "search_docs" else {

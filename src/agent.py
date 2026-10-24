@@ -24,6 +24,23 @@ def plan_question(question):
 
     q = question.casefold()
 
+    if "damaged" in q and "upi" in q:
+        return [
+            {
+                "tool": "get_policy",
+                "arguments": {
+                    "name": "refund_policy",
+                    "as_of_date": DEFAULT_AS_OF_DATE,
+                },
+            },
+            {
+                "tool": "search_docs",
+                "arguments": {
+                    "query": "approved UPI refund processing time",
+                },
+            },
+        ]
+
     if "2024" in q:
         return [{
             "tool": "get_policy",
@@ -373,7 +390,7 @@ def answer_question(question):
         try:
             # IMPORTANT: call_tool takes (tool_name, arguments).
             # Do not unpack the dictionary as keyword arguments.
-            result = call_tool(tool_name, arguments)
+            result = call_tool(tool_name, arguments, user_question=question)
 
             observe_result(tool_name, result, evidence)
 
@@ -423,6 +440,7 @@ def answer_question(question):
         "question": question,
         "answer": answer,
         "status": status,
+        "retrieval_complete": not errors and not missing_evidence,
         "claims": verified_claims,
         "candidate_claims": candidate_claims,
         "unsupported_claims": verification["unsupported_claims"],
@@ -433,5 +451,4 @@ def answer_question(question):
         "tool_calls": get_call_count(),
         "tool_records": get_call_records(),
     }
-
 

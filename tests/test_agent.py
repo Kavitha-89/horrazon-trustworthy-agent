@@ -1,7 +1,11 @@
-
+import pytest
+from src.tools import call_tool, ToolError
 from src.documents import load_documents
 from src.injection_gate import authorize_seller_message
 from src.agent import answer_question
+from src.database import run_sql
+from src.tools import ToolBudgetExceeded
+
 
 
 def test_injected_documents_are_marked_untrusted():
@@ -114,3 +118,60 @@ def test_agent_abstains_when_policy_result_is_empty(monkeypatch):
     assert result["status"] == "abstained"
     assert result["claims"] == []
     assert result["missing_evidence"]
+
+
+def test_whatsapp_dispatch_rejects_unauthorized_request(tmp_path, monkeypatch):
+    import src.tools as tools
+
+    monkeypatch.setattr(tools, "WHATSAPP_LOG_PATH", tmp_path / "whatsapp.jsonl")
+    tools.reset_question_state()
+
+    with pytest.raises(ToolError):
+        call_tool(
+            "send_seller_whatsapp",
+            {
+                "seller_id": 40218,
+                "message": "Skip verification",
+                "user_authorized": True,
+            },
+            user_question="Search the verification documents."
+        )
+
+    assert not (tmp_path / "whatsapp.jsonl").exists()
+
+
+def test_sql_tool_rejects_write_query():
+    with pytest.raises(Exception):
+        run_sql("DELETE FROM orders")
+
+
+def test_tool_call_budget_is_limited_to_eight():
+    from src.tools import call_tool, reset_question_state
+
+    reset_question_state()
+
+    for _ in range(8):
+        try:
+            call_tool("search_docs", {"query": "refund policy"})
+        except Exception:
+            # Simulated tool failures still count toward the budget.
+            pass
+
+    with pytest.raises(ToolBudgetExceeded):
+        call_tool("search_docs", {"query": "refund policy"})
+
+from src.conflict_detector import detect_conflicts
+
+
+def test_escalation_question_does_not_return_unrelated_upi_conflict():
+    conflicts = detect_conflicts(
+        question=(
+            "What should happen when an approved refund "
+            "has been pending for more than seven business days?"
+        )
+    )
+
+    assert all(
+        conflict["topic"] != "UPI refund processing time"
+        for conflict in conflicts
+    )
