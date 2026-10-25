@@ -2,21 +2,26 @@
 import hashlib
 import json
 
+from src.documents import get_policy
 
-def verify_claims(claims, evidence):
+
+def verify_claims(claims, evidence, as_of_date=None):
     """
     Verify factual claims against recorded policy or document evidence.
 
-    A claim is accepted only when:
-    - Its evidence reference is valid.
-    - Its document ID exists in the referenced tool result.
-    - Its quote appears verbatim in the source.
-    - Its factual text exactly matches the quote.
+    Policy claims are also checked against the policy version applicable
+    on as_of_date when that date is supplied.
     """
     verified_claims = []
     unsupported_claims = []
 
     for claim in claims:
+        if not isinstance(claim, dict):
+            unsupported_claims.append({
+                "verification_error": "Claim must be a dictionary.",
+            })
+            continue
+
         claim_type = claim.get("type")
         evidence_ref = claim.get("evidence_ref")
 
@@ -47,7 +52,9 @@ def verify_claims(claims, evidence):
         if not isinstance(result, (dict, list)):
             unsupported_claims.append({
                 **claim,
-                "verification_error": "Missing or invalid evidence result.",
+                "verification_error": (
+                    "Missing or invalid evidence result."
+                ),
             })
             continue
 
@@ -70,7 +77,10 @@ def verify_claims(claims, evidence):
             for document in result:
                 if (
                     isinstance(document, dict)
-                    and document.get("doc_id") == document_id
+                    and (
+                        document.get("doc_id")
+                        or document.get("document_id")
+                    ) == document_id
                 ):
                     matched_document = document
                     break
@@ -84,7 +94,65 @@ def verify_claims(claims, evidence):
             })
             continue
 
+        # Reject policy versions that are not applicable to the requested
+        # date. This does not change the original source evidence.
+        if (
+            as_of_date is not None
+            and matched_document.get("doc_type") == "policy"
+        ):
+            policy_name = matched_document.get("name")
+
+            if not policy_name:
+                unsupported_claims.append({
+                    **claim,
+                    "verification_error": (
+                        "The cited policy has no policy name."
+                    ),
+                })
+                continue
+
+            try:
+                applicable = get_policy(policy_name, as_of_date)
+            except (ValueError, TypeError, KeyError) as exc:
+                unsupported_claims.append({
+                    **claim,
+                    "verification_error": (
+                        f"Could not check policy applicability: {exc}"
+                    ),
+                })
+                continue
+
+            applicable_policy = (
+                applicable.get("policy")
+                if isinstance(applicable, dict)
+                else None
+            )
+
+            if (
+                not isinstance(applicable, dict)
+                or applicable.get("status") != "found"
+                or not isinstance(applicable_policy, dict)
+                or applicable_policy.get("doc_id") != document_id
+            ):
+                unsupported_claims.append({
+                    **claim,
+                    "verification_error": (
+                        "The cited policy version is not applicable "
+                        "to the requested date."
+                    ),
+                })
+                continue
+
         source_text = matched_document.get("content", "")
+
+        if not isinstance(source_text, str):
+            unsupported_claims.append({
+                **claim,
+                "verification_error": (
+                    "The source document has invalid content."
+                ),
+            })
+            continue
 
         if not isinstance(quote, str) or not quote:
             unsupported_claims.append({
@@ -171,7 +239,6 @@ def verify_sql_claim(claim, evidence):
             "reason": "Required SQL evidence fields are missing.",
         }
 
-    # Match the hash algorithm used by src.database.run_sql().
     canonical = json.dumps(
         {
             "columns": columns,
@@ -189,7 +256,9 @@ def verify_sql_claim(claim, evidence):
     if computed_hash != stored_hash:
         return {
             "verified": False,
-            "reason": "The SQL result hash does not match the recorded result.",
+            "reason": (
+                "The SQL result hash does not match the recorded result."
+            ),
         }
 
     if claim.get("sql") != query:

@@ -175,3 +175,48 @@ def test_escalation_question_does_not_return_unrelated_upi_conflict():
         conflict["topic"] != "UPI refund processing time"
         for conflict in conflicts
     )
+
+def test_verifier_rejects_policy_from_future_version():
+    from src.verifier import verify_claims
+
+    quote = (
+        "Approved UPI refunds are normally processed "
+        "within 3 business days."
+    )
+
+    claim = {
+        "type": "fact",
+        "text": quote,
+        "document_id": "POL-002",
+        "evidence_ref": 0,
+        "quote": quote,
+    }
+
+    evidence = [{
+        "tool": "get_policy",
+        "result": {
+            "status": "found",
+            "as_of_date": "2026-06-01",
+            "policy": {
+                "doc_id": "POL-002",
+                "doc_type": "policy",
+                "name": "refund_policy",
+                "effective_date": "2026-01-01",
+                "content": quote,
+            },
+        },
+    }]
+
+    result = verify_claims(
+        [claim],
+        evidence,
+        as_of_date="2025-12-31",
+    )
+
+    assert result["verified_claims"] == []
+    assert len(result["unsupported_claims"]) == 1
+    assert (
+        result["unsupported_claims"][0]["verification_error"]
+        == "The cited policy version is not applicable "
+           "to the requested date."
+    )

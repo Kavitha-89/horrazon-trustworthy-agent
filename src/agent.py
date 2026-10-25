@@ -1,5 +1,7 @@
 ﻿
 from src.injection_gate import authorize_seller_message
+import re
+
 from src.conflict_detector import detect_conflicts
 from src.verifier import (
     verify_claims as strict_verify_claims,
@@ -24,6 +26,7 @@ def plan_question(question):
 
     q = question.casefold()
 
+    # Preserve the existing multi-source investigation.
     if "damaged" in q and "upi" in q:
         return [
             {
@@ -41,86 +44,107 @@ def plan_question(question):
             },
         ]
 
-    if "2024" in q:
-        return [{
-            "tool": "get_policy",
-            "arguments": {
-                "name": "refund_policy",
-                "as_of_date": "2024-12-31",
-            },
-        }]
+    # Retrieve the policy version applicable to the year in the question.
+    year_match = re.search(r"\b(2024|2025|2026)\b", q)
+
+    if year_match:
+        year = int(year_match.group(1))
+        return [
+            {
+                "tool": "get_policy",
+                "arguments": {
+                    "name": "refund_policy",
+                    "as_of_date": f"{year}-12-31",
+                },
+            }
+        ]
 
     if any(phrase in q for phrase in (
         "how many orders",
         "total number of orders",
         "orders are in the database",
     )):
-        return [{
-            "tool": "run_sql",
-            "arguments": {
-                "read_only_query":
-                    "SELECT COUNT(*) AS total FROM orders"
-            },
-        }]
+        return [
+            {
+                "tool": "run_sql",
+                "arguments": {
+                    "read_only_query":
+                        "SELECT COUNT(*) AS total FROM orders"
+                },
+            }
+        ]
 
     if any(word in q for word in (
         "trend", "percentage", "average", "compare",
         "total refunds", "how many refunds",
     )):
-        return [{
-            "tool": "run_sql",
-            "arguments": {
-                "read_only_query": (
-                    "SELECT payment_mode, refund_status, "
-                    "COUNT(*) AS total "
-                    "FROM orders JOIN refunds USING (order_id) "
-                    "GROUP BY payment_mode, refund_status "
-                    "ORDER BY payment_mode, refund_status"
-                )
-            },
-        }]
+        return [
+            {
+                "tool": "run_sql",
+                "arguments": {
+                    "read_only_query": (
+                        "SELECT payment_mode, refund_status, "
+                        "COUNT(*) AS total "
+                        "FROM orders JOIN refunds USING (order_id) "
+                        "GROUP BY payment_mode, refund_status "
+                        "ORDER BY payment_mode, refund_status"
+                    )
+                },
+            }
+        ]
+
     if any(word in q for word in ("pending", "escalat")):
-        return [{
-            "tool": "get_policy",
-            "arguments": {
-                "name": "refund_escalation_policy",
-                "as_of_date": DEFAULT_AS_OF_DATE,
-            },
-        }]
+        return [
+            {
+                "tool": "get_policy",
+                "arguments": {
+                    "name": "refund_escalation_policy",
+                    "as_of_date": DEFAULT_AS_OF_DATE,
+                },
+            }
+        ]
 
     if "cod" in q or "bank details" in q:
-        return [{
-            "tool": "get_policy",
-            "arguments": {
-                "name": "cod_refund_policy",
-                "as_of_date": DEFAULT_AS_OF_DATE,
-            },
-        }]
+        return [
+            {
+                "tool": "get_policy",
+                "arguments": {
+                    "name": "cod_refund_policy",
+                    "as_of_date": DEFAULT_AS_OF_DATE,
+                },
+            }
+        ]
 
     if "card" in q:
-        return [{
-            "tool": "get_policy",
-            "arguments": {
-                "name": "card_refund_policy",
-                "as_of_date": DEFAULT_AS_OF_DATE,
-            },
-        }]
+        return [
+            {
+                "tool": "get_policy",
+                "arguments": {
+                    "name": "card_refund_policy",
+                    "as_of_date": DEFAULT_AS_OF_DATE,
+                },
+            }
+        ]
 
     if any(word in q for word in (
         "policy", "refund", "upi", "tier", "damaged",
     )):
-        return [{
-            "tool": "get_policy",
-            "arguments": {
-                "name": "refund_policy",
-                "as_of_date": DEFAULT_AS_OF_DATE,
-            },
-        }]
+        return [
+            {
+                "tool": "get_policy",
+                "arguments": {
+                    "name": "refund_policy",
+                    "as_of_date": DEFAULT_AS_OF_DATE,
+                },
+            }
+        ]
 
-    return [{
-        "tool": "search_docs",
-        "arguments": {"query": question},
-    }]
+    return [
+        {
+            "tool": "search_docs",
+            "arguments": {"query": question},
+        }
+    ]
 
 
 def requires_order_specific_evidence(question):
@@ -167,8 +191,7 @@ def _build_claims(evidence):
                 if not isinstance(doc, dict):
                     continue
 
-                # Injection-test documents are untrusted instructions,
-                # not evidence to execute or repeat as policy.
+                # Injection-test documents are not policy evidence.
                 if doc.get("doc_type") == "test_injection":
                     continue
 
@@ -177,7 +200,11 @@ def _build_claims(evidence):
                 )
                 content = doc.get("content")
 
-                if document_id and isinstance(content, str) and content.strip():
+                if (
+                    document_id
+                    and isinstance(content, str)
+                    and content.strip()
+                ):
                     claims.append({
                         "type": "fact",
                         "text": content,
@@ -238,7 +265,8 @@ def _build_claims(evidence):
     return claims
 
 
-def _verify_all_claims(claims, evidence):
+def _verify_all_claims(claims, evidence, as_of_date=None):
+    """Verify candidate claims, including policy-version applicability."""
     verified = []
     unsupported = []
 
@@ -247,6 +275,7 @@ def _verify_all_claims(claims, evidence):
 
         if (
             not isinstance(evidence_ref, int)
+            or isinstance(evidence_ref, bool)
             or evidence_ref < 0
             or evidence_ref >= len(evidence)
         ):
@@ -281,7 +310,11 @@ def _verify_all_claims(claims, evidence):
                     })
 
             else:
-                verification = strict_verify_claims([claim], evidence)
+                verification = strict_verify_claims(
+                    [claim],
+                    evidence,
+                    as_of_date=as_of_date,
+                )
 
                 if isinstance(verification, dict):
                     verified_list = verification.get(
@@ -296,7 +329,11 @@ def _verify_all_claims(claims, evidence):
                     else:
                         reason = (
                             rejected_list[0].get(
-                                "reason", "Evidence verification failed."
+                                "verification_error",
+                                rejected_list[0].get(
+                                    "reason",
+                                    "Evidence verification failed.",
+                                ),
                             )
                             if rejected_list
                             and isinstance(rejected_list[0], dict)
@@ -368,7 +405,10 @@ def answer_question(question):
 
         return {
             "question": question,
-            "answer": "I cannot provide a verified answer from the available evidence.",
+            "answer": (
+                "I cannot provide a verified answer from the "
+                "available evidence."
+            ),
             "status": "abstained",
             "claims": [],
             "candidate_claims": [],
@@ -388,9 +428,11 @@ def answer_question(question):
         arguments = step["arguments"]
 
         try:
-            # IMPORTANT: call_tool takes (tool_name, arguments).
-            # Do not unpack the dictionary as keyword arguments.
-            result = call_tool(tool_name, arguments, user_question=question)
+            result = call_tool(
+                tool_name,
+                arguments,
+                user_question=question,
+            )
 
             observe_result(tool_name, result, evidence)
 
@@ -406,7 +448,7 @@ def answer_question(question):
                     f"{tool_name} returned a simulated empty result."
                 )
 
-        except (TimeoutError, ToolBudgetExceeded, Exception) as exc:
+        except Exception as exc:
             errors.append({
                 "tool": tool_name,
                 "error_type": type(exc).__name__,
@@ -416,8 +458,24 @@ def answer_question(question):
                 f"{tool_name} failed; its result could not be verified."
             )
 
+    # Use the date from the actual retrieval plan when checking policy claims.
+    policy_dates = [
+        step.get("arguments", {}).get("as_of_date")
+        for step in plan
+        if step.get("tool") == "get_policy"
+        and step.get("arguments", {}).get("as_of_date")
+    ]
+    requested_policy_date = (
+        policy_dates[0] if policy_dates else None
+    )
+
     candidate_claims = _build_claims(evidence)
-    verification = _verify_all_claims(candidate_claims, evidence)
+
+    verification = _verify_all_claims(
+        candidate_claims,
+        evidence,
+        as_of_date=requested_policy_date,
+    )
     verified_claims = verification["verified_claims"]
 
     if verified_claims:
@@ -428,7 +486,9 @@ def answer_question(question):
         )
         status = "answered" if answer else "abstained"
     else:
-        answer = "I cannot provide a verified answer from the evidence retrieved."
+        answer = (
+            "I cannot provide a verified answer from the evidence retrieved."
+        )
         status = "abstained"
 
     if not verified_claims and not missing_evidence:
@@ -451,4 +511,3 @@ def answer_question(question):
         "tool_calls": get_call_count(),
         "tool_records": get_call_records(),
     }
-
