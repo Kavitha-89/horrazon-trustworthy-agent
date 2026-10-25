@@ -145,4 +145,4 @@ Retrieved documents are treated as untrusted evidence, not as authorization to p
 
 ## AI-Use Disclosure
 
-Complete this section to accurately disclose any AI assistance used during development, debugging, documentation, or testing, in accordance with the assessment instructions. Do not claim that all work was completed without AI assistance if that is not accurate.
+AI tools were used for research and to understand concepts related to the problem, The implementation, testing, and results were checked against actual project execution.
